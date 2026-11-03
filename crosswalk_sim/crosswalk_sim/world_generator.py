@@ -241,7 +241,7 @@ class WorldBuilder:
                 self.parts.append(_static_model(name, body, (xx, side * y_tree, 0, 0, 0, 0)))
         k = 0
         for side in (1, -1):
-            for x in (-38, -12, 12, 38):
+            for x in (-40, -22, 22, 40):    # keep the viewpoints at x ~ -13 free
                 xx = x + (5 if side > 0 else 0)
                 if lamp:
                     body = (f'<visual name="v"><geometry><mesh><uri>file://{lamp}</uri>'
