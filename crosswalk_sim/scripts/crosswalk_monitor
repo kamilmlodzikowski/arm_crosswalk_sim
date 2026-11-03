@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Crosswalk monitor.
 
-* publishes the static map of the street (/crosswalk/map_markers) and the goal
+* publishes the static map of the street (/debug/crosswalk/map_markers) and the goal
   (/crosswalk/goal) in the `world` frame, plus the static TF world -> odom
   (= robot spawn pose; re-anchored after /crosswalk/reset, because wheel
   odometry does not notice the teleport),
 * turns the ground-truth JSON of the scenario plugin into RViz markers
-  (/crosswalk/ground_truth/markers),
+  (/debug/crosswalk/ground_truth/markers),
 * pretty-prints referee events (collisions, violations, crossings).
 """
 
@@ -61,11 +61,11 @@ class CrosswalkMonitor(Node):
         self.log_events = gp('log_events')
 
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.map_pub = self.create_publisher(MarkerArray, '/crosswalk/map_markers', latched)
+        self.map_pub = self.create_publisher(MarkerArray, '/debug/crosswalk/map_markers', latched)
         self.goal_pub = self.create_publisher(PoseStamped, '/crosswalk/goal', latched)
-        self.gt_pub = self.create_publisher(MarkerArray, '/crosswalk/ground_truth/markers', 10)
-        self.create_subscription(String, '/crosswalk/ground_truth/state', self.on_state, 10)
-        self.create_subscription(String, '/crosswalk/events', self.on_event, 50)
+        self.gt_pub = self.create_publisher(MarkerArray, '/debug/crosswalk/ground_truth/markers', 10)
+        self.create_subscription(String, '/debug/crosswalk/ground_truth/state', self.on_state, 10)
+        self.create_subscription(String, '/debug/crosswalk/events', self.on_event, 50)
         self.prev_ids = set()
         self.odom = (0.0, 0.0, 0.0)
         self.reanchor_in = -1         # odom messages to wait before re-anchoring

@@ -289,15 +289,15 @@ public:
     this->LoadParams(_sdf);
 
     this->pubPedLight = this->node.Advertise<gz::msgs::StringMsg>(
-      "/crosswalk/ground_truth/pedestrian_light");
+      "/debug/crosswalk/ground_truth/pedestrian_light");
     this->pubCarLight = this->node.Advertise<gz::msgs::StringMsg>(
-      "/crosswalk/ground_truth/car_light");
+      "/debug/crosswalk/ground_truth/car_light");
     this->pubState = this->node.Advertise<gz::msgs::StringMsg>(
-      "/crosswalk/ground_truth/state");
+      "/debug/crosswalk/ground_truth/state");
     this->pubEvents = this->node.Advertise<gz::msgs::StringMsg>(
-      "/crosswalk/events");
+      "/debug/crosswalk/events");
     this->pubReferee = this->node.Advertise<gz::msgs::StringMsg>(
-      "/crosswalk/referee");
+      "/debug/crosswalk/referee");
     this->node.Subscribe("/crosswalk/reset", &CrosswalkScenario::OnReset, this);
 
     gzmsg << "[CrosswalkScenario] " << this->peds.size() << " pedestrians, "

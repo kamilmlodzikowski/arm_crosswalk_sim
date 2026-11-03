@@ -173,15 +173,21 @@ Preset scenarios: `easy` (quiet street, no runners), `hard` (busy street,
 runners in 70% of cycles, some jaywalkers), `runner_test` (a runner every
 cycle, 1–5 s after GREEN).
 
-## 5. Referee and helper topics
+## 5. Referee and debug topics
+
+Everything under `/debug/` is for debugging and grading. It reveals the light
+state, the positions of all pedestrians and cars, and when a red-light runner
+is coming, so **a solution must not subscribe to any `/debug/` topic**. Only
+the robot's sensors, `/cmd_vel`, `/crosswalk/goal` and `/crosswalk/reset` are
+meant for the solution.
 
 The `CrosswalkScenario` Gazebo plugin also watches the robot. All messages are
 JSON in `std_msgs/String`.
 
 | topic | content |
 |---|---|
-| `/crosswalk/events` | discrete events: `entered_road` (with the light state), `violation` (`entered_on_red`, `outside_crosswalk`), `warning` (`entered_on_flashing_green`), `collision` (with a car or a pedestrian, including whether the car was a red-light runner), `near_miss` (a car closer than `referee.near_miss_distance` while the robot is on the road), `crossed` (`SUCCESS` or `FAILED`, time on the road, collisions, violations), `aborted` (the robot went back), `goal_reached`, `reset`, and the scheduling of red-light runners |
-| `/crosswalk/referee` | status at 2 Hz: zone, attempts, successes, collisions, last result, distance to the goal |
+| `/debug/crosswalk/events` | discrete events: `entered_road` (with the light state), `violation` (`entered_on_red`, `outside_crosswalk`), `warning` (`entered_on_flashing_green`), `collision` (with a car or a pedestrian, including whether the car was a red-light runner), `near_miss` (a car closer than `referee.near_miss_distance` while the robot is on the road), `crossed` (`SUCCESS` or `FAILED`, time on the road, collisions, violations), `aborted` (the robot went back), `goal_reached`, `reset`, and the scheduling of red-light runners |
+| `/debug/crosswalk/referee` | status at 2 Hz: zone, attempts, successes, collisions, last result, distance to the goal |
 | `/crosswalk/reset` (`std_msgs/Empty`) | puts the robot back to the spawn pose and clears the referee. Traffic keeps running |
 
 A crossing counts as `SUCCESS` when the robot gets from one sidewalk to the
@@ -189,7 +195,7 @@ other without collisions and violations. The monitor node prints events to the
 terminal in color.
 
 ```bash
-ros2 topic echo /crosswalk/events --field data
+ros2 topic echo /debug/crosswalk/events --field data
 ros2 topic pub --once /crosswalk/reset std_msgs/msg/Empty
 ```
 
@@ -198,17 +204,17 @@ is hit.
 
 ### Ground truth (debugging and grading only, not for the solution)
 
-* `/crosswalk/ground_truth/pedestrian_light`: `RED`, `GREEN` or `GREEN_BLINKING`
-* `/crosswalk/ground_truth/car_light`: `GREEN`, `YELLOW`, `RED` or `RED_YELLOW`
-* `/crosswalk/ground_truth/state`: JSON at 10 Hz with the light states, the
+* `/debug/crosswalk/ground_truth/pedestrian_light`: `RED`, `GREEN` or `GREEN_BLINKING`
+* `/debug/crosswalk/ground_truth/car_light`: `GREEN`, `YELLOW`, `RED` or `RED_YELLOW`
+* `/debug/crosswalk/ground_truth/state`: JSON at 10 Hz with the light states, the
   time left in the current phase, the robot pose, and every pedestrian and car
   (pose, speed, size, runner flag)
-* `/crosswalk/ground_truth/markers`: the same as RViz markers (the "Ground
+* `/debug/crosswalk/ground_truth/markers`: the same as RViz markers (the "Ground
   truth (debug)" display in RViz)
 
-Students should be told to use only the robot's sensors. If you want to hide
-the ground truth completely, remove the `ground_truth` entries from
-`crosswalk_sim/config/bridge.yaml`.
+The street map for RViz is published latched on `/debug/crosswalk/map_markers`.
+To hide the ground truth from ROS completely, remove the `ground_truth`
+entries from `crosswalk_sim/config/bridge.yaml`.
 
 ### Overview camera and recording videos
 
