@@ -1,0 +1,12 @@
+# Every cycle has a red-light runner arriving early in the pedestrian green -
+# handy for testing the danger detection. Little other traffic.
+pedestrians:
+  crossing_rate: 4.0
+  sidewalk_rate: 2.0
+cars:
+  rate: 4.0
+traffic_light:
+  car_green: 16.0
+red_runner:
+  probability: 1.0
+  window: [1.0, 5.0]

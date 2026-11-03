@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Crosswalk monitor.
+
+* publishes the static map of the street (/crosswalk/map_markers) and the goal
+  (/crosswalk/goal) in the `world` frame, plus the static TF world -> odom
+  (= robot spawn pose; re-anchored after /crosswalk/reset, because wheel
+  odometry does not notice the teleport),
+* turns the ground-truth JSON of the scenario plugin into RViz markers
+  (/crosswalk/ground_truth/markers),
+* pretty-prints referee events (collisions, violations, crossings).
+"""
+
+import json
+import math
+
+import rclpy
+from rclpy.executors import ExternalShutdownException
+from geometry_msgs.msg import PoseStamped, TransformStamped
+from nav_msgs.msg import Odometry
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import ColorRGBA, String
+from tf2_msgs.msg import TFMessage
+from visualization_msgs.msg import Marker, MarkerArray
+
+LIGHT_COLORS = {
+    'RED': (1.0, 0.1, 0.05), 'GREEN': (0.1, 1.0, 0.3), 'GREEN_BLINKING': (0.6, 1.0, 0.6),
+    'YELLOW': (1.0, 0.8, 0.0), 'RED_YELLOW': (1.0, 0.45, 0.0),
+}
+
+
+def _yaw_quat(yaw):
+    return 0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)
+
+
+def _color(r, g, b, a=1.0):
+    return ColorRGBA(r=float(r), g=float(g), b=float(b), a=float(a))
+
+
+class CrosswalkMonitor(Node):
+
+    def __init__(self):
+        super().__init__('crosswalk_monitor')
+        self.declare_parameter('lane_width', 3.5)
+        self.declare_parameter('sidewalk_width', 4.0)
+        self.declare_parameter('crosswalk_width', 4.0)
+        self.declare_parameter('stop_line_offset', 3.0)
+        self.declare_parameter('road_length', 200.0)
+        self.declare_parameter('robot_spawn', [0.0, -5.2, 1.5708])
+        self.declare_parameter('goal', [0.0, 6.0])
+        self.declare_parameter('publish_world_to_odom', True)
+        self.declare_parameter('log_events', True)
+        gp = lambda n: self.get_parameter(n).value  # noqa: E731
+        self.lane_w = gp('lane_width')
+        self.side_w = gp('sidewalk_width')
+        self.cw_w = gp('crosswalk_width')
+        self.stop_off = gp('stop_line_offset')
+        self.road_len = gp('road_length')
+        self.spawn = list(gp('robot_spawn'))
+        self.goal = list(gp('goal'))
+        self.log_events = gp('log_events')
+
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.map_pub = self.create_publisher(MarkerArray, '/crosswalk/map_markers', latched)
+        self.goal_pub = self.create_publisher(PoseStamped, '/crosswalk/goal', latched)
+        self.gt_pub = self.create_publisher(MarkerArray, '/crosswalk/ground_truth/markers', 10)
+        self.create_subscription(String, '/crosswalk/ground_truth/state', self.on_state, 10)
+        self.create_subscription(String, '/crosswalk/events', self.on_event, 50)
+        self.prev_ids = set()
+        self.odom = (0.0, 0.0, 0.0)
+        self.reanchor_in = -1         # odom messages to wait before re-anchoring
+        self.tf_static = None
+        if gp('publish_world_to_odom'):
+            # own latched publisher: tf2_ros' StaticTransformBroadcaster cannot
+            # update an already published transform
+            self.tf_static = self.create_publisher(TFMessage, '/tf_static', QoSProfile(
+                depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                reliability=ReliabilityPolicy.RELIABLE))
+            self.create_subscription(Odometry, '/odom', self.on_odom, 10)
+            self.send_world_to_odom(0.0, 0.0, 0.0)
+
+        self.publish_map()
+        g = PoseStamped()
+        g.header.frame_id = 'world'
+        g.pose.position.x, g.pose.position.y = float(self.goal[0]), float(self.goal[1])
+        g.pose.orientation.z, g.pose.orientation.w = math.sin(math.pi / 4), math.cos(math.pi / 4)
+        self.goal_pub.publish(g)
+
+    # ------------------------------------------------------------ world->odom
+    def on_odom(self, msg):
+        p, q = msg.pose.pose.position, msg.pose.pose.orientation
+        self.odom = (p.x, p.y, math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+        if self.reanchor_in > 0:
+            self.reanchor_in -= 1
+        elif self.reanchor_in == 0:
+            self.reanchor_in = -1
+            self.send_world_to_odom(*self.odom)
+            self.get_logger().info('world->odom re-anchored after reset')
+
+    def send_world_to_odom(self, ox, oy, oyaw):
+        """world->odom such that the current odom pose (ox, oy, oyaw) maps onto the spawn pose."""
+        sx, sy, syaw = (float(v) for v in self.spawn)
+        yaw = syaw - oyaw
+        c, s = math.cos(yaw), math.sin(yaw)
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = 'world'
+        t.child_frame_id = 'odom'
+        t.transform.translation.x = sx - (c * ox - s * oy)
+        t.transform.translation.y = sy - (s * ox + c * oy)
+        (t.transform.rotation.x, t.transform.rotation.y,
+         t.transform.rotation.z, t.transform.rotation.w) = _yaw_quat(yaw)
+        self.tf_static.publish(TFMessage(transforms=[t]))
+
+    # ------------------------------------------------------------- static map
+    def _rect(self, mid, ns, x, y, sx, sy, rgb, z=0.0, a=1.0):
+        m = Marker()
+        m.header.frame_id = 'world'
+        m.ns, m.id, m.type, m.action = ns, mid, Marker.CUBE, Marker.ADD
+        m.pose.position.x, m.pose.position.y, m.pose.position.z = float(x), float(y), float(z)
+        m.pose.orientation.w = 1.0
+        m.scale.x, m.scale.y, m.scale.z = float(sx), float(sy), 0.01
+        m.color = _color(*rgb, a)
+        return m
+
+    def publish_map(self):
+        R, sw, L, cwh = self.lane_w, self.side_w, self.road_len, self.cw_w / 2
+        ms = MarkerArray()
+        ms.markers.append(self._rect(0, 'road', 0, 0, L, 2 * R, (0.2, 0.2, 0.22), z=-0.02))
+        ms.markers.append(self._rect(1, 'sidewalk', 0, R + sw / 2, L, sw, (0.6, 0.6, 0.58), z=-0.02))
+        ms.markers.append(self._rect(2, 'sidewalk', 0, -R - sw / 2, L, sw, (0.6, 0.6, 0.58), z=-0.02))
+        n = int((2 * R - 0.5) // 1.0) + 1
+        for i in range(n):
+            ms.markers.append(self._rect(10 + i, 'crosswalk', 0, -(n - 1) / 2 + i, self.cw_w, 0.5,
+                                         (0.95, 0.95, 0.95), z=-0.01))
+        sx = cwh + self.stop_off + 0.2
+        ms.markers.append(self._rect(30, 'stop_line', -sx, -R / 2, 0.4, R, (0.95, 0.95, 0.95), z=-0.01))
+        ms.markers.append(self._rect(31, 'stop_line', sx, R / 2, 0.4, R, (0.95, 0.95, 0.95), z=-0.01))
+        g = Marker()
+        g.header.frame_id = 'world'
+        g.ns, g.id, g.type = 'goal', 40, Marker.CYLINDER
+        g.pose.position.x, g.pose.position.y, g.pose.position.z = float(self.goal[0]), float(self.goal[1]), 0.01
+        g.pose.orientation.w = 1.0
+        g.scale.x = g.scale.y = 1.0
+        g.scale.z = 0.02
+        g.color = _color(0.2, 0.5, 1.0, 0.6)
+        ms.markers.append(g)
+        self.map_pub.publish(ms)
+
+    # ----------------------------------------------------------- ground truth
+    def on_state(self, msg):
+        try:
+            s = json.loads(msg.data)
+        except ValueError:
+            return
+        stamp = self.get_clock().now().to_msg()
+        ms = MarkerArray()
+        ids = set()
+
+        def add(m):
+            m.header.frame_id = 'world'
+            m.header.stamp = stamp
+            m.lifetime.sec = 1
+            ids.add((m.ns, m.id))
+            ms.markers.append(m)
+
+        for c in s.get('cars', []):
+            idx = int(c['id'].split('_')[-1])
+            m = Marker(ns='cars', id=idx, type=Marker.CUBE, action=Marker.ADD)
+            m.pose.position.x, m.pose.position.y, m.pose.position.z = c['x'], c['y'], 0.75
+            _, _, m.pose.orientation.z, m.pose.orientation.w = _yaw_quat(c['yaw'])
+            m.scale.x, m.scale.y, m.scale.z = c['length'], c['width'], 1.5
+            m.color = _color(1.0, 0.1, 0.1, 0.8) if c['red_runner'] else _color(0.2, 0.4, 0.9, 0.6)
+            add(m)
+            t = Marker(ns='car_labels', id=idx, type=Marker.TEXT_VIEW_FACING, action=Marker.ADD)
+            t.pose.position.x, t.pose.position.y, t.pose.position.z = c['x'], c['y'], 2.0
+            t.pose.orientation.w = 1.0
+            t.scale.z = 0.45
+            t.color = _color(1, 1, 1)
+            t.text = f"{c['speed'] * 3.6:.0f} km/h" + (' RED RUNNER' if c['red_runner'] else '')
+            add(t)
+        for p in s.get('pedestrians', []):
+            idx = int(p['id'].split('_')[-1])
+            m = Marker(ns='pedestrians', id=idx, type=Marker.CYLINDER, action=Marker.ADD)
+            m.pose.position.x, m.pose.position.y, m.pose.position.z = p['x'], p['y'], 0.9
+            m.pose.orientation.w = 1.0
+            m.scale.x = m.scale.y = 0.5
+            m.scale.z = 1.8
+            m.color = (_color(1.0, 0.5, 0.0, 0.8) if p.get('jaywalker')
+                       else _color(0.1, 0.8, 0.3, 0.7) if p['state'] == 'crossing'
+                       else _color(0.9, 0.9, 0.2, 0.7))
+            add(m)
+        # light indicators above the pedestrian signals
+        R, cwh = self.lane_w, self.cw_w / 2
+        for i, (x, y) in enumerate(((-(cwh + 0.6), R + 0.5), (cwh + 0.6, -(R + 0.5)))):
+            m = Marker(ns='pedestrian_light', id=i, type=Marker.SPHERE, action=Marker.ADD)
+            m.pose.position.x, m.pose.position.y, m.pose.position.z = x, y, 3.4
+            m.pose.orientation.w = 1.0
+            m.scale.x = m.scale.y = m.scale.z = 0.6
+            m.color = _color(*LIGHT_COLORS.get(s.get('pedestrian_light'), (0.5, 0.5, 0.5)))
+            add(m)
+        t = Marker(ns='status', id=0, type=Marker.TEXT_VIEW_FACING, action=Marker.ADD)
+        t.pose.position.x, t.pose.position.y, t.pose.position.z = 0.0, 0.0, 5.0
+        t.pose.orientation.w = 1.0
+        t.scale.z = 0.45
+        t.color = _color(1, 1, 1)
+        t.text = (f"pedestrians: {s.get('pedestrian_light')} ({s.get('pedestrian_light_remaining', 0):.0f} s)"
+                  f"   cars: {s.get('car_light')}")
+        add(t)
+
+        for ns, mid in self.prev_ids - ids:
+            ms.markers.append(Marker(ns=ns, id=mid, action=Marker.DELETE))
+        self.prev_ids = ids
+        self.gt_pub.publish(ms)
+
+    # ----------------------------------------------------------------- events
+    def on_event(self, msg):
+        try:
+            e = json.loads(msg.data)
+        except ValueError:
+            self.get_logger().info(msg.data)
+            return
+        kind = e.get('type', '?')
+        if kind == 'reset' and self.tf_static is not None:
+            self.reanchor_in = 10     # let the teleported robot settle (~0.3 s of odometry)
+        if not self.log_events:
+            return
+        text = f"[t={e.get('t', 0):7.2f}] {kind}: " + ', '.join(
+            f'{k}={v}' for k, v in e.items() if k not in ('t', 'type'))
+        if kind == 'collision':
+            self.get_logger().error('\033[1;31m' + text + '\033[0m')
+        elif kind in ('violation', 'near_miss', 'warning'):
+            self.get_logger().warning(text)
+        elif kind == 'crossed':
+            color = '\033[1;32m' if e.get('result') == 'SUCCESS' else '\033[1;31m'
+            self.get_logger().info(color + text + '\033[0m')
+        else:
+            self.get_logger().info(text)
+
+
+def main():
+    rclpy.init()
+    node = CrosswalkMonitor()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

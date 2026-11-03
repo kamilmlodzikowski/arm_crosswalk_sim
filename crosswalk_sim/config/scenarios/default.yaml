@@ -1,0 +1,98 @@
+# =============================================================================
+#  Crosswalk scenario - default parameters
+#
+#  Other scenario files in this directory only list what they change; they are
+#  merged on top of this file. Any value can also be overridden from the
+#  command line, e.g.
+#     ros2 launch crosswalk_sim sim.launch.py scenario:=hard \
+#          params:="red_runner.probability=0.8 red_runner.window=[2,6] seed=42"
+# =============================================================================
+
+seed: 0            # random seed; 0 = different every run, >0 = reproducible run
+warmup: 30.0       # [s] scenario is pre-simulated so the street is busy at t=0
+
+# ------------------------------------------------------------------ geometry
+world:
+  lane_width: 3.5          # [m] one lane per direction -> road width = 2*lane_width
+  sidewalk_width: 4.0      # [m]
+  crosswalk_width: 4.0     # [m] along the street (x axis)
+  stop_line_offset: 3.0    # [m] distance between stop line and the crosswalk
+  road_length: 200.0       # [m]
+  curb_height: 0.10        # [m] physical curb, lowered to 0 at the crosswalk
+  buildings: true
+  trees: true              # trees + lamp posts (lidar/camera clutter)
+  shadows: true            # disable on slow (software rendering) machines
+  real_time_factor: 1.0    # target simulation speed (lower it if the PC cannot keep up)
+  overview_camera: false   # static camera overlooking the crossing -> /overview_camera/image
+  overview_camera_rate: 5.0
+
+# --------------------------------------------------------------- signal plan
+#  car GREEN -> car YELLOW -> all red -> ped GREEN -> ped GREEN blinking
+#  -> all red -> car RED+YELLOW -> car GREEN ...
+traffic_light:
+  car_green: 25.0          # [s] (pedestrians have RED)
+  car_yellow: 3.0          # [s]
+  all_red: 2.0             # [s] clearance time, used twice per cycle
+  ped_green: 12.0          # [s] steady pedestrian green
+  ped_green_blink: 4.0     # [s] flashing pedestrian green (do not enter any more)
+  blink_period: 1.0        # [s]
+  car_red_yellow: 1.5      # [s]
+  start_phase: random      # random | car_green | ped_green
+
+# ---------------------------------------------------------------- pedestrians
+pedestrians:
+  crossing_rate: 8.0       # [1/min] arrivals of people who want to cross (both sides together)
+  sidewalk_rate: 6.0       # [1/min] arrivals of people walking along the sidewalks
+  max_count: 24            # maximum number of pedestrians present at the same time
+  speed_min: 1.0           # [m/s] walking speed, uniform in [min, max]
+  speed_max: 1.6
+  red_crossing_probability: 0.0   # share of crossers that ignore RED (they still wait for a gap)
+  avoid_robot: true        # pedestrians steer around the robot
+  spawn_distance: 35.0     # [m] people appear/disappear this far from the crosswalk
+  animation_factor: 4.588  # walk animation seconds per metre (foot sliding tuning)
+
+# ----------------------------------------------------------------------- cars
+cars:
+  rate: 8.0                # [1/min] arrival rate per lane (Poisson)
+  max_count: 14            # maximum number of cars present at the same time
+  speed_min: 8.0           # [m/s] desired speed, uniform in [min, max] (8 m/s = 29 km/h)
+  speed_max: 13.9          # [m/s] (50 km/h)
+  yield_to_robot: false    # true = drivers brake when the robot is in their lane
+  yield_to_pedestrians: true
+
+# --------------------------------------------------------- red-light runners
+#  Once per signal cycle a die is cast: with `probability` one car ignores its
+#  RED light. Its front bumper reaches the crosswalk `window[0]..window[1]`
+#  seconds after the pedestrian light turned GREEN (uniformly distributed).
+#  Negative values = during the all-red clearance just before GREEN.
+red_runner:
+  probability: 0.3         # per pedestrian-green phase, 0..1
+  window: [0.0, 8.0]       # [s] relative to the pedestrian GREEN onset
+  speed_min: 10.0          # [m/s]
+  speed_max: 14.0
+
+# ---------------------------------------------------------------------- robot
+robot:
+  name: delivery_robot
+  spawn: [0.0, -5.2, 1.5708]   # x, y, yaw in the world frame (south sidewalk, facing north)
+  goal: [0.0, 6.0]             # x, y on the north sidewalk
+  footprint: [0.72, 0.64]      # length, width used by the referee
+  camera:
+    width: 640
+    height: 480
+    fps: 15
+    hfov: 1.40               # [rad]
+    pitch: 0.0               # [rad] positive = looking down
+  lidar:                     # 3D lidar (Velodyne VLP-16-like) -> /lidar/points, /scan (middle ring)
+    samples: 900             # horizontal samples over 360 deg
+    vertical_samples: 16     # channels; 1 = planar 2D lidar
+    vertical_fov: 0.5236     # [rad] total vertical field of view (+-15 deg)
+    range: 30.0              # [m]
+    rate: 10                 # [Hz]
+  max_linear_velocity: 1.6   # [m/s]
+  max_angular_velocity: 2.0  # [rad/s]
+
+# -------------------------------------------------------------------- referee
+referee:
+  near_miss_distance: 1.0    # [m] car passing closer than this (robot on the road) -> near_miss event
+  pause_on_collision: false  # pause the simulation when the robot is hit

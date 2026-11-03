@@ -1,0 +1,9 @@
+# Quiet street, no red-light runners - for first experiments.
+pedestrians:
+  crossing_rate: 3.0
+  sidewalk_rate: 2.0
+cars:
+  rate: 5.0
+  speed_max: 11.0
+red_runner:
+  probability: 0.0
